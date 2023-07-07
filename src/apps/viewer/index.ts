@@ -8,5 +8,5 @@
 import './embedded.html';
 import './favicon.ico';
 import './index.html';
-require('mol-plugin-ui/skin/light.scss');
+require('mol-plugin-ui/skin/dark.scss');
 export * from './app';
