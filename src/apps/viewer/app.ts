@@ -7,19 +7,13 @@
 
 import { G3DFormat, G3dProvider } from '../../extensions/g3d/format';
 import { VolsegVolumeServerConfig } from '../../extensions/volumes-and-segmentations';
-// import { Volume } from '../../mol-model/volume';
-import { DownloadStructure, /*PdbDownloadProvider*/ } from '../../mol-plugin-state/actions/structure';
-// import { DownloadDensity } from '../../mol-plugin-state/actions/volume';
+import { DownloadStructure } from '../../mol-plugin-state/actions/structure';
 import { PresetTrajectoryHierarchy } from '../../mol-plugin-state/builder/structure/hierarchy-preset';
 import { StructureRepresentationPresetProvider } from '../../mol-plugin-state/builder/structure/representation-preset';
 import { DataFormatProvider } from '../../mol-plugin-state/formats/provider';
 import { BuiltInTopologyFormat } from '../../mol-plugin-state/formats/topology';
 import { BuiltInCoordinatesFormat } from '../../mol-plugin-state/formats/coordinates';
 import { BuiltInTrajectoryFormat } from '../../mol-plugin-state/formats/trajectory';
-// import { BuildInVolumeFormat } from '../../mol-plugin-state/formats/volume';
-// import { createVolumeRepresentationParams } from '../../mol-plugin-state/helpers/volume-representation-params';
-// import { PluginStateObject } from '../../mol-plugin-state/objects';
-// import { StateTransforms } from '../../mol-plugin-state/transforms';
 import { TrajectoryFromModelAndCoordinates } from '../../mol-plugin-state/transforms/model';
 import { createPluginUI } from '../../mol-plugin-ui/react18';
 import { PluginUIContext } from '../../mol-plugin-ui/context';
@@ -27,7 +21,7 @@ import { DefaultPluginUISpec, PluginUISpec } from '../../mol-plugin-ui/spec';
 import { PluginCommands } from '../../mol-plugin/commands';
 import { PluginConfig } from '../../mol-plugin/config';
 import { PluginLayoutControlsDisplay } from '../../mol-plugin/layout';
-import { StateObjectRef, StateObjectSelector } from '../../mol-state';
+import { StateObjectRef, StateObjectSelector, StateSelection } from '../../mol-state';
 import { Asset } from '../../mol-util/assets';
 import { Color } from '../../mol-util/color';
 import '../../mol-util/polyfill';
@@ -51,6 +45,7 @@ import { Mat4 } from '../../mol-math/linear-algebra';
 import { StateTransforms } from '../../mol-plugin-state/transforms';
 import { SymmetryOperator } from '../../mol-math/geometry';
 import { setSubtreeVisibility } from '../../mol-plugin/behavior/static/state';
+import { colors } from './palindromic_theme';
 
 const CustomFormats = [
     ['g3d', G3dProvider] as const
@@ -145,31 +140,6 @@ export class Viewer {
                 },
                 remoteState: o.layoutShowRemoteState ? 'default' : 'none',
             },
-            config: [
-                [PluginConfig.General.DisableAntialiasing, o.disableAntialiasing],
-                [PluginConfig.General.PixelScale, o.pixelScale],
-                [PluginConfig.General.PickScale, o.pickScale],
-                [PluginConfig.General.PickPadding, o.pickPadding],
-                [PluginConfig.General.EnableWboit, o.enableWboit],
-                [PluginConfig.General.EnableDpoit, o.enableDpoit],
-                [PluginConfig.General.PreferWebGl1, o.preferWebgl1],
-                [PluginConfig.General.AllowMajorPerformanceCaveat, o.allowMajorPerformanceCaveat],
-                [PluginConfig.General.PowerPreference, o.powerPreference],
-                [PluginConfig.Viewport.ShowExpand, o.viewportShowExpand],
-                [PluginConfig.Viewport.ShowControls, o.viewportShowControls],
-                [PluginConfig.Viewport.ShowSettings, o.viewportShowSettings],
-                [PluginConfig.Viewport.ShowSelectionMode, o.viewportShowSelectionMode],
-                [PluginConfig.Viewport.ShowAnimation, o.viewportShowAnimation],
-                [PluginConfig.Viewport.ShowTrajectoryControls, o.viewportShowTrajectoryControls],
-                [PluginConfig.State.DefaultServer, o.pluginStateServer],
-                [PluginConfig.State.CurrentServer, o.pluginStateServer],
-                [PluginConfig.VolumeStreaming.DefaultServer, o.volumeStreamingServer],
-                [PluginConfig.VolumeStreaming.Enabled, !o.volumeStreamingDisabled],
-                [PluginConfig.Download.DefaultPdbProvider, o.pdbProvider],
-                [PluginConfig.Download.DefaultEmdbProvider, o.emdbProvider],
-                [PluginConfig.Structure.SaccharideCompIdMapType, o.saccharideCompIdMapType],
-                [VolsegVolumeServerConfig.DefaultServer, o.volumesAndSegmentationsDefaultServer],
-            ]
         };
 
         const element = typeof elementOrId === 'string'
@@ -404,22 +374,36 @@ export class Viewer {
         this.$('controls')!.appendChild(labelEl);
     }
 
+    async focus(sels: StructureSelection[]){
+        for (const sel of sels){
+            const loci = StructureSelection.toLociWithSourceUnits(sel);
+                this.plugin.managers.structure.focus.addFromLoci(loci);
+        }
+    }
+
+    async updateFocusRepr() {
+        const state = this.plugin.state.data, tree = state.tree;
+        this.plugin.dataTransaction(async () => {
+            this.plugin.managers.structure.hierarchy.current.structures.forEach(async (s, i) => {                
+                const refs = StateSelection.findUniqueTagsInSubtree(tree, s.cell.transform.ref, new Set(["structure-focus-surr-repr"]));
+                state.build().to(refs["structure-focus-surr-repr"]!).update(StateTransforms.Representation.StructureRepresentation3D, old => {old.colorTheme.params.idx = i;}
+                ).commit();
+            })
+        });
+    }
+
     async superposing(){
         const mols = ['8dtx', '8dtt', '8dtr'];
-        let color: Color[] = [];
-        mols.forEach(() => {
-            color.push(Color((parseInt(this.randomColorHex(), 16))))
-        })
-
-        for (let idx = 0; idx < mols.length; idx++) { this.addControl(mols[idx], color[idx], () => {this.toggleVisibility(idx);} ) }
+        for (let idx = 0; idx < mols.length; idx++) { this.addControl(mols[idx], Color(colors[idx]), () => {this.toggleVisibility(idx);} ) }
 
         let structRef: Array<StateObjectSelector> = [];
         await Promise.all(mols.map(async (mol, idx) => {
             const struct = await this.loadStructure( 'http://localhost:3333/' + mol + '.pdb', 'pdb');
             structRef.push(struct);
             const polymer = await this.plugin.builders.structure.tryCreateComponentStatic(struct, 'polymer');
-            await this.plugin.builders.structure.representation.addRepresentation(polymer!, {type: "cartoon", typeParams: {alpha: 0.3}, color: 'uniform', colorParams: { value: color[idx]}});
-          }));
+            await this.plugin.builders.structure.representation.addRepresentation(polymer!, {type: "cartoon", typeParams: {alpha: 0.3}, color: 'palindromic-custom', colorParams: { idx:idx }});
+        }));
+
         let sels = []
         for (let li = 0; li < mols.length; li++){
             sels.push(Script.getStructureSelection(Q => Q.struct.generator.atomGroups({
@@ -427,6 +411,7 @@ export class Viewer {
             }), this.plugin.managers.structure.hierarchy.current.structures[li]?.cell.obj?.data as Structure))
         }
         await this.superpose(sels);
+        await this.focus(sels);
         this.plugin.managers.interactivity.lociSelects.deselectAll();
         
         let h3 = this.selectSequence(1, 95, 102);
@@ -436,21 +421,23 @@ export class Viewer {
             stem_8dtx: await this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[0], stem_8dtx, 'stem_8dtx', {label: 'stem_8dtx'}),
             stem_8dtt: await this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[1], stem_8dtt_8dtr, 'stem_8dtt', {label: 'stem_8dtt'}),
             stem_8dtr: await this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[2], stem_8dtt_8dtr, 'stem_8dtr', {label: 'stem_8dtr'}),
-
+            
             h3_8dtx: await this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[0], h3, 'h3_8dtx', {label: 'h3_8dtx'}),
             h3_8dtt: await this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[1], h3, 'h3_8dtt', {label: 'h3_8dtt'}),
             h3_8dtr: await this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[2], h3, 'h3_8dtr', {label: 'h3_8dtr'}),
         }
         const builder = this.plugin.builders.structure.representation;
         const update = this.plugin.build();
-        builder.buildRepresentation(update, components.stem_8dtx, { type: 'cartoon', color: 'uniform', colorParams: { value: Color(0x00ff00)} })
-        builder.buildRepresentation(update, components.stem_8dtt, { type: 'cartoon', color: 'uniform', colorParams: { value: Color(0x00ff00)} })
-        builder.buildRepresentation(update, components.stem_8dtr, { type: 'cartoon', color: 'uniform', colorParams: { value: Color(0x00ff00)} })
-
-        builder.buildRepresentation(update, components.h3_8dtx, { type: 'cartoon', color: 'uniform', colorParams: { value: color[0]} })
-        builder.buildRepresentation(update, components.h3_8dtt, { type: 'cartoon', color: 'uniform', colorParams: { value: color[1]} })
-        builder.buildRepresentation(update, components.h3_8dtr, { type: 'cartoon', color: 'uniform', colorParams: { value: color[2]} })
+        builder.buildRepresentation(update, components.stem_8dtx, { type: 'cartoon', color: 'palindromic-custom' })
+        builder.buildRepresentation(update, components.stem_8dtt, { type: 'cartoon', color: 'palindromic-custom' })
+        builder.buildRepresentation(update, components.stem_8dtr, { type: 'cartoon', color: 'palindromic-custom' })
+        
+        builder.buildRepresentation(update, components.h3_8dtx, { type: 'cartoon', color: 'palindromic-custom', colorParams: { idx: 0} })
+        builder.buildRepresentation(update, components.h3_8dtt, { type: 'cartoon', color: 'palindromic-custom', colorParams: { idx: 1} })
+        builder.buildRepresentation(update, components.h3_8dtr, { type: 'cartoon', color: 'palindromic-custom', colorParams: { idx: 2} })
         await update.commit();
+        await this.updateFocusRepr();
+        this.plugin.managers.structure.focus.clear();
     }
     
     async demo(){

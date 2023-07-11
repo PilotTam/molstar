@@ -37,8 +37,6 @@
         <div id="app"></div>
         <script type="text/javascript" src="./molstar.js"></script>
         <script type="text/javascript">
-            const time = 5
-            const sleep = (ms) => new Promise(r => setTimeout(r, ms));
             async function render(){
                 viewer = await molstar.Viewer.create('app', {
                     layoutIsExpanded: false,
@@ -47,12 +45,12 @@
                     layoutShowSequence: true,
                     layoutShowLog: false,
                     layoutShowLeftPanel: false,
-                    collapseRightPanel: false,
+                    collapseRightPanel: true,
 
                     viewportShowExpand: true,
                     viewportShowSelectionMode: true,
                     viewportShowAnimation: false,
-                })
+                },)
                 viewer.superposing()
             }
 

@@ -44,6 +44,7 @@ import { VolumeSegmentColorThemeProvider } from './color/volume-segment';
 import { ExternalVolumeColorThemeProvider } from './color/external-volume';
 import { ColorThemeCategory } from './color/categories';
 import { CartoonColorThemeProvider } from './color/cartoon';
+import { CustomPalindromicThemeProvider } from '../apps/viewer/palindromic_theme';
 
 export type LocationColor = (location: Location, isSecondary: boolean) => Color
 
@@ -152,6 +153,7 @@ namespace ColorTheme {
         'volume-segment': VolumeSegmentColorThemeProvider,
         'volume-value': VolumeValueColorThemeProvider,
         'external-volume': ExternalVolumeColorThemeProvider,
+        'palindromic-custom': CustomPalindromicThemeProvider,
     };
     type _BuiltIn = typeof BuiltIn
     export type BuiltIn = keyof _BuiltIn
