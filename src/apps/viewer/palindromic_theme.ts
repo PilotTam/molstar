@@ -6,7 +6,7 @@
  */
 
 
-import { Unit, StructureProperties, StructureElement, Bond } from '../../mol-model/structure';
+import { StructureElement, Bond, StructureProperties, Unit } from '../../mol-model/structure';
 
 import { Color } from '../../mol-util/color';
 import { Location } from '../../mol-model/location';
@@ -16,11 +16,13 @@ import { ThemeDataContext } from '../../mol-theme/theme';
 import { Column } from '../../mol-data/db';
 
 const Description = 'Gives every chain a color from a list based on its `asym_id` value.';
-export const colors = [0xd33115, 0xfcc400, 0x009ce0, 0x7d2187];
+export const colors = [0xd33115, 0xfcc400, 0x009ce0, 0x7d2187, 0xe4a096, 0xe4e496, 0x96e4e0, 0xb096e4, 0x24876e, 0x872453];
 const PalindromicCustomColorThemeParams = {
     colors: PD.ObjectList({ color: PD.Color(Color(0xffffff)) }, ({ color }) => Color.toHexString(color),
         { defaultValue: colors.map(c => ({ color: Color(c) })) }),
-    idx: PD.Numeric(0, {min: 0, max: 3})
+    idx: PD.Numeric(0, {min: 0, max: 3}),
+    isEpitope: PD.Boolean(false),
+    epitope_id: PD.Numeric(-1)
 };
 type PalindromicCustomColorThemeParams = typeof PalindromicCustomColorThemeParams
 function getChainIdColorThemeParams(ctx: ThemeDataContext) {
@@ -51,7 +53,7 @@ function addAsymIds(map: Map<string, number>, data: Column<string>) {
 function PalindromicCustomColorTheme(ctx: ThemeDataContext, props: PD.Values<PalindromicCustomColorThemeParams>): ColorTheme<PalindromicCustomColorThemeParams> {
     let color: LocationColor;
 
-    const colors = props.colors, idx = props.idx, defaultColor = colors[0].color;
+    const colors = props.colors, idx = props.idx, isEpitope = props.isEpitope, epitope_id = props.epitope_id, defaultColor = colors[0].color;
 
     if (ctx.structure) {
         const l = StructureElement.Location.create(ctx.structure);
@@ -67,18 +69,21 @@ function PalindromicCustomColorTheme(ctx: ThemeDataContext, props: PD.Values<Pal
         }
 
         color = (location: Location): Color => {
+            const len = colors.length;
             if (StructureElement.Location.is(location)) {
+                if (isEpitope) return Color(0x00ff00);
                 const asym_id = getAsymId(location.unit);
                 const o = asymIdSerialMap.get(asym_id(location)) || 0;
-                if (o === 2) return Color(0x00ff00);
-                return colors[idx].color;
+                if (o === epitope_id) return Color(0x00ff00);
+                return colors[idx % len].color;
             } else if (Bond.isLocation(location)) {
+                if (isEpitope) return Color(0x00ff00);
                 const asym_id = getAsymId(location.aUnit);
                 l.unit = location.aUnit;
                 l.element = location.aUnit.elements[location.aIndex];
                 const o = asymIdSerialMap.get(asym_id(l)) || 0;
-                if (o === 2) return Color(0x00ff00);
-                return colors[idx].color;
+                if (o === epitope_id) return Color(0x00ff00);
+                return colors[idx % len].color;
             }
             return defaultColor;
         };

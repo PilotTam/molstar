@@ -276,7 +276,7 @@ export class PluginContext {
             this.canvas3dInit.next(true);
             let props = this.spec.canvas3d;
 
-            const backgroundColor = Color(0xFCFBF9);
+            const backgroundColor = Color(0x000000);
             if (!props) {
                 this.canvas3d?.setProps({ renderer: { backgroundColor } });
             } else {

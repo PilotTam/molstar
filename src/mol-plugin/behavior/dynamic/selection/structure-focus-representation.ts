@@ -30,6 +30,7 @@ const StructureFocusRepresentationParams = (plugin: PluginContext) => {
             customDefault: createStructureRepresentationParams(plugin, void 0, {
                 type: 'ball-and-stick',
                 size: 'physical',
+                color: 'palindromic-custom',
                 typeParams: { sizeFactor: 0.22, sizeAspectRatio: 0.73, adjustCylinderLength: true, xrayShaded: true, aromaticBonds: false, multipleBonds: 'off', excludeTypes: ['hydrogen-bond', 'metal-coordination'] },
             })
         }),

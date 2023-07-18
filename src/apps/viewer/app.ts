@@ -7,7 +7,7 @@
 
 import { G3DFormat, G3dProvider } from '../../extensions/g3d/format';
 import { VolsegVolumeServerConfig } from '../../extensions/volumes-and-segmentations';
-import { DownloadStructure } from '../../mol-plugin-state/actions/structure';
+import { DownloadStructure, PdbDownloadProvider } from '../../mol-plugin-state/actions/structure';
 import { PresetTrajectoryHierarchy } from '../../mol-plugin-state/builder/structure/hierarchy-preset';
 import { StructureRepresentationPresetProvider } from '../../mol-plugin-state/builder/structure/representation-preset';
 import { DataFormatProvider } from '../../mol-plugin-state/formats/provider';
@@ -34,7 +34,7 @@ import { MolScriptBuilder as MS } from '../../mol-script/language/builder';
 import { PluginSpec } from '../../mol-plugin/spec';
 import { ObjectKeys } from '../../mol-util/type-helpers';
 import { Script } from '../../mol-script/script';
-import { Structure, StructureElement, StructureProperties } from '../../mol-model/structure';
+import { Structure, StructureElement, StructureProperties, Unit } from '../../mol-model/structure';
 import { StructureSelection } from '../../mol-model/structure/query';
 import { LociEntry } from '../../mol-plugin-ui/structure/superposition';
 import { elementLabel, structureElementStatsLabel } from '../../mol-theme/label';
@@ -46,6 +46,11 @@ import { StateTransforms } from '../../mol-plugin-state/transforms';
 import { SymmetryOperator } from '../../mol-math/geometry';
 import { setSubtreeVisibility } from '../../mol-plugin/behavior/static/state';
 import { colors } from './palindromic_theme';
+import { InteractionsRepresentationProvider } from '../../mol-model-props/computed/representations/interactions';
+import { InteractionTypeColorThemeProvider } from '../../mol-model-props/computed/themes/interaction-type';
+import { OrderedSet } from '../../mol-data/int/ordered-set';
+import { StructureFocusRepresentation } from '../../mol-plugin/behavior/dynamic/selection/structure-focus-representation';
+import { Expression } from '../../mol-script/language/expression';
 
 const CustomFormats = [
     ['g3d', G3dProvider] as const
@@ -229,12 +234,26 @@ export class Viewer {
         return { model, coords, preset };
     }
 
-    randomColorHex(): string {
-        let hex = '';
-        for (let i = 0; i < 6; i++) {
-          hex += Math.floor(Math.random() * 16).toString(16);
-        }
-        return hex;
+    async loadDataFromServer(){
+        let oneLineString = "";
+        await fetch('http://localhost:3333/8dtx.pdb')
+        .then(response => response.text())
+        .then(pdbString => {
+          // Remove newline characters from the string
+          oneLineString = pdbString;
+        })
+        console.log(oneLineString)
+        const data = await this.plugin.builders.data.rawData({ data: oneLineString}, { state: { isGhost: true } });
+        const trajectory = await this.plugin.builders.structure.parseTrajectory(data, 'pdb');
+        await this.plugin.builders.structure.hierarchy.applyPreset(trajectory, 'default');
+    }
+
+    async loadStructure(file: string, format: BuiltInTrajectoryFormat, isBinary: boolean = false){
+        const data = await this.plugin.builders.data.download({ url: Asset.Url(file), isBinary: isBinary }, { state: { isGhost: true } });
+        const trajectory = await this.plugin.builders.structure.parseTrajectory(data, format);
+        const model = await this.plugin.builders.structure.createModel(trajectory);
+        const structure = await this.plugin.builders.structure.createStructure(model);
+        return structure;
     }
 
     handleResize() {
@@ -279,21 +298,13 @@ export class Viewer {
         setSubtreeVisibility(this.plugin.state.data, ref, !this.plugin.state.data.cells.get(ref)!.state.isHidden)
     }
 
-    async loadStructure(file: string, format: BuiltInTrajectoryFormat, isBinary: boolean = false){
-        const data = await this.plugin.builders.data.download({ url: Asset.Url(file), isBinary: isBinary }, { state: { isGhost: true } });
-        const trajectory = await this.plugin.builders.structure.parseTrajectory(data, format);
-        const model = await this.plugin.builders.structure.createModel(trajectory);
-        const structure = await this.plugin.builders.structure.createStructure(model);
-        return structure;
-    }
-
     selectSequence(chain: string | number, start?: number, end?: number) {
         const atomGroups: any = {};
         if (typeof chain === 'string') {
             atomGroups['chain-test'] = MS.core.rel.eq([chain, MS.ammp('auth_asym_id')]);
           } else {
             atomGroups['chain-test'] = MS.core.rel.eq([chain, MS.ammp('id')]);}
-        if (start !== undefined && end !== undefined) {
+        if (start !== -1) {
           atomGroups['residue-test'] = MS.core.rel.inRange([MS.ammp('label_seq_id'), start, end]);
         }
         return MS.struct.generator.atomGroups(atomGroups);
@@ -362,39 +373,112 @@ export class Viewer {
     }
 
     $(id: string) { return document.getElementById(id); }
-    addControl(label: string, color: Color, action: any) {
+    addControl(label: string, action: any, color?: Color) {
         var labelEl = document.createElement('label');
         var inputEl = document.createElement('input');
         inputEl.type = 'checkbox';
         inputEl.checked = true;
         labelEl.appendChild(inputEl);
         labelEl.appendChild(document.createTextNode(label));
-        labelEl.style.backgroundColor = Color.toStyle(color);
+        if (color) labelEl.style.backgroundColor = Color.toStyle(color);
         inputEl.onclick = action;
         this.$('controls')!.appendChild(labelEl);
     }
 
     async focus(sels: StructureSelection[]){
         for (const sel of sels){
-            const loci = StructureSelection.toLociWithSourceUnits(sel);
-                this.plugin.managers.structure.focus.addFromLoci(loci);
+            const loci = StructureSelection.toLociWithCurrentUnits(sel);
+            this.plugin.managers.structure.focus.addFromLoci(loci);
         }
     }
 
-    async updateFocusRepr() {
+    async updateFocusRepr(epitope_id: number) {
         const state = this.plugin.state.data, tree = state.tree;
-        this.plugin.dataTransaction(async () => {
-            this.plugin.managers.structure.hierarchy.current.structures.forEach(async (s, i) => {                
-                const refs = StateSelection.findUniqueTagsInSubtree(tree, s.cell.transform.ref, new Set(["structure-focus-surr-repr"]));
-                state.build().to(refs["structure-focus-surr-repr"]!).update(StateTransforms.Representation.StructureRepresentation3D, old => {old.colorTheme.params.idx = i;}
-                ).commit();
+        const build = state.build();
+        await this.plugin.dataTransaction(async () => {
+            this.plugin.managers.structure.hierarchy.current.structures.forEach(async (s, i) => {  
+                const refs = StateSelection.findUniqueTagsInSubtree(tree, s.cell.transform.ref, new Set(["structure-focus-surr-repr", "structure-focus-target-repr"]));   
+                build.to(refs["structure-focus-surr-repr"]!).update(StateTransforms.Representation.StructureRepresentation3D, old => {old.colorTheme.params.idx = i; old.colorTheme.params.epitope_id = epitope_id});
+                build.to(refs["structure-focus-target-repr"]!).update(StateTransforms.Representation.StructureRepresentation3D, old => {old.colorTheme.params.idx = i; old.colorTheme.params.epitope_id = epitope_id});
             })
+        });
+        build.commit();
+    }
+
+    async testURI(pdb: string, options?: LoadStructureOptions){
+        const params = DownloadStructure.createDefaultParams(this.plugin.state.data.root.obj!, this.plugin);
+        const provider = this.plugin.config.get(PluginConfig.Download.DefaultPdbProvider)!;
+        return this.plugin.runTask(this.plugin.state.data.applyAction(DownloadStructure, {
+            source: {
+                name: 'pdb' as const,
+                params: {
+                    provider: {
+                        id: pdb,
+                        server: {
+                            name: provider,
+                            params: PdbDownloadProvider[provider].defaultValue as any
+                        }
+                    },
+                    options: { ...params.source.params.options, representationParams: options?.representationParams as any },
+                }
+            }
+        }));
+    }
+
+    async toggleSurr(mols: number, antigen: number){
+        this.plugin.state.updateBehavior(StructureFocusRepresentation, p => {
+            if (p.expandRadius == 0) p.expandRadius = 5;
+            else p.expandRadius = 0;
+        })
+        let sels = []
+        for (let li = 0; li < mols; li++){
+            sels.push(Script.getStructureSelection(Q => Q.struct.generator.atomGroups({
+                'chain-test': Q.core.rel.eq([1, Q.ammp('id')]),
+            }), this.plugin.managers.structure.hierarchy.current.structures[li]?.cell.obj?.data as Structure))
+        }
+        await Promise.all(sels);
+        await this.focus(sels);
+        await this.updateFocusRepr(antigen);
+        this.plugin.managers.structure.focus.clear();
+        this.plugin.managers.interactivity.lociSelects.deselectAll();
+    }
+    
+    LociDebugger(){
+        return this.plugin.behaviors.interaction.click.subscribe((event) => {
+            const atomInfo: { id: number, labelCompId: string, authSeqId: number, authAsymId: string }[] = [];
+            const loci = event.current.loci;
+            if (StructureElement.Loci.is(loci)) {
+                const l = StructureElement.Location.create(loci.structure);
+                for (const e of loci.elements) {
+                    if (Unit.isAtomic(e.unit)) {
+                        l.unit = e.unit;
+                        OrderedSet.forEach(e.indices, v => {
+                            console.log(v)
+                            l.element = e.unit.elements[v];
+                            atomInfo.push({
+                                id: StructureProperties.atom.id(l),
+                                labelCompId: StructureProperties.atom.label_comp_id(l),
+                                authSeqId: StructureProperties.residue.auth_seq_id(l),
+                                authAsymId: StructureProperties.chain.auth_asym_id(l),
+                            });
+                        });
+                    }
+                }
+            }
+            console.log(atomInfo);
         });
     }
 
     async superposing(){
+        this.LociDebugger();
+
+        //params to be changed to json input
         const mols = ['8dtx', '8dtt', '8dtr'];
-        for (let idx = 0; idx < mols.length; idx++) { this.addControl(mols[idx], Color(colors[idx]), () => {this.toggleVisibility(idx);} ) }
+        const antigenChain = 2;
+
+
+        this.addControl("Show Surroundings", () => {this.toggleSurr(mols.length, antigenChain);})
+        for (let idx = 0; idx < mols.length; idx++) { this.addControl(mols[idx], () => {this.toggleVisibility(idx);}, Color(colors[idx]) ) }
 
         let structRef: Array<StateObjectSelector> = [];
         await Promise.all(mols.map(async (mol, idx) => {
@@ -410,33 +494,46 @@ export class Viewer {
                 'chain-test': Q.core.rel.eq([1, Q.ammp('id')]),
             }), this.plugin.managers.structure.hierarchy.current.structures[li]?.cell.obj?.data as Structure))
         }
+        await Promise.all(sels);
         await this.superpose(sels);
         await this.focus(sels);
         this.plugin.managers.interactivity.lociSelects.deselectAll();
-        
-        let h3 = this.selectSequence(1, 95, 102);
-        let stem_8dtx = this.selectSequence('I');
-        let stem_8dtt_8dtr = this.selectSequence('G');
-        const components = {
-            stem_8dtx: await this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[0], stem_8dtx, 'stem_8dtx', {label: 'stem_8dtx'}),
-            stem_8dtt: await this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[1], stem_8dtt_8dtr, 'stem_8dtt', {label: 'stem_8dtt'}),
-            stem_8dtr: await this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[2], stem_8dtt_8dtr, 'stem_8dtr', {label: 'stem_8dtr'}),
-            
-            h3_8dtx: await this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[0], h3, 'h3_8dtx', {label: 'h3_8dtx'}),
-            h3_8dtt: await this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[1], h3, 'h3_8dtt', {label: 'h3_8dtt'}),
-            h3_8dtr: await this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[2], h3, 'h3_8dtr', {label: 'h3_8dtr'}),
+
+        const selections = [
+            {id: 0, key: "h3", chainId: 'H', start: 95, end: 102},
+            {id: 0, key: "epitope", chainId: 'I', start: -1, end: -1},
+            {id: 0, key: "m1", chainId: 'H', start: 101, end: 101},
+            {id: 1, key: "h3", chainId: 'A', start: 95, end: 102},
+            {id: 1, key: "epitope", chainId: 'G', start: -1, end: -1},
+            {id: 2, key: "h3", chainId: 'A', start: 95, end: 102},
+            {id: 2, key: "epitope", chainId: 'G', start: -1, end: -1},
+            {id: 2, key: "m1", chainId: 'A', start: 101, end: 101},
+        ]; //should be from json mutated pos and gen from cdr and hasEpitope
+        const expressions: {[x: string]: Expression} = {};
+        for (const sel of selections){
+           expressions[sel.id +  "_" + sel.key] = this.selectSequence(sel.chainId, sel.start, sel.end);
         }
+        const components: {[x: string]: any} = {};
+        const promises: Promise<any>[] = [];
+        for (const key in expressions) {
+          const promise = this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[parseInt(key.split('_')[0], 10)], expressions[key], key, {label: key});
+          promises.push(promise);
+          promise.then(component => {
+            components[key] = component;
+          });
+        }
+        await Promise.all(promises);
         const builder = this.plugin.builders.structure.representation;
         const update = this.plugin.build();
-        builder.buildRepresentation(update, components.stem_8dtx, { type: 'cartoon', color: 'palindromic-custom' })
-        builder.buildRepresentation(update, components.stem_8dtt, { type: 'cartoon', color: 'palindromic-custom' })
-        builder.buildRepresentation(update, components.stem_8dtr, { type: 'cartoon', color: 'palindromic-custom' })
-        
-        builder.buildRepresentation(update, components.h3_8dtx, { type: 'cartoon', color: 'palindromic-custom', colorParams: { idx: 0} })
-        builder.buildRepresentation(update, components.h3_8dtt, { type: 'cartoon', color: 'palindromic-custom', colorParams: { idx: 1} })
-        builder.buildRepresentation(update, components.h3_8dtr, { type: 'cartoon', color: 'palindromic-custom', colorParams: { idx: 2} })
+        for (const key in components) {
+            if (key[2] == 'm') {
+                builder.buildRepresentation(update, components[key], {type: "ball-and-stick", color: "palindromic-custom", colorParams: {idx: parseInt(key.split('_')[0], 10)}});
+                builder.buildRepresentation(update, components[key], {type: InteractionsRepresentationProvider, typeParams: { includeParent: true, parentDisplay: 'between', visuals: ["inter-unit"] }, color: InteractionTypeColorThemeProvider }); 
+            }
+            else builder.buildRepresentation(update, components[key], {type: 'cartoon',  color: 'palindromic-custom', colorParams: {idx: parseInt(key.split('_')[0], 10), epitope_id: antigenChain }})
+        }
         await update.commit();
-        await this.updateFocusRepr();
+        await this.updateFocusRepr(antigenChain);
         this.plugin.managers.structure.focus.clear();
     }
     

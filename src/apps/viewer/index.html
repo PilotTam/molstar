@@ -37,33 +37,26 @@
         <div id="app"></div>
         <script type="text/javascript" src="./molstar.js"></script>
         <script type="text/javascript">
+            function getParam(name, regex) {
+                var r = new RegExp(name + '=' + '(' + regex + ')[&]?', 'i');
+                return decodeURIComponent(((window.location.search || '').match(r) || [])[1] || '');
+            }
             async function render(){
                 viewer = await molstar.Viewer.create('app', {
                     layoutIsExpanded: false,
                     layoutShowControls: true,
                     layoutShowRemoteState: false,
                     layoutShowSequence: true,
-                    layoutShowLog: false,
+                    layoutShowLog: true,
                     layoutShowLeftPanel: false,
-                    collapseRightPanel: true,
+                    collapseRightPanel: false,
 
                     viewportShowExpand: true,
                     viewportShowSelectionMode: true,
                     viewportShowAnimation: false,
                 },)
-                viewer.superposing()
-            }
-
-            function $(id) { return document.getElementById(id); }
-            function addControl(label, action) {
-                var labelEl = document.createElement('label');
-                var inputEl = document.createElement('input');
-                inputEl.type = 'checkbox';
-                inputEl.checked = true;
-                labelEl.appendChild(inputEl);
-                labelEl.appendChild(document.createTextNode(label));
-                inputEl.onclick = action;
-                $('controls').appendChild(labelEl);
+                var pdb = getParam('pdb', '[^&]+').trim();
+                viewer.superposing();
             }
             render();
             

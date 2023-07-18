@@ -5,7 +5,7 @@
  */
 
 import { ParamDefinition as PD } from '../../../mol-util/param-definition';
-import { Structure, Unit, Bond } from '../../../mol-model/structure';
+import { Structure, Unit, Bond, StructureElement } from '../../../mol-model/structure';
 import { Features, FeaturesBuilder } from './features';
 import { ValenceModelProvider } from '../valence-model';
 import { InteractionsIntraContacts, InteractionsInterContacts, FeatureType, interactionTypeLabel } from './common';
@@ -173,9 +173,12 @@ export const ContactProviderParams = getProvidersParams([
     // 'weak-hydrogen-bonds',
 ]);
 
+export type InteractionContactFilter = (a: StructureElement.Location, b: StructureElement.Location) => boolean;
+
 export const InteractionsParams = {
     providers: PD.Group(ContactProviderParams, { isFlat: true }),
     contacts: PD.Group(ContactsParams, { label: 'Advanced Options' }),
+    contactFilter: PD.Value<InteractionContactFilter>(undefined as any, {isHidden: true}),
 };
 export type InteractionsParams = typeof InteractionsParams
 export type InteractionsProps = PD.Values<InteractionsParams>
