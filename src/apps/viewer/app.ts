@@ -98,6 +98,11 @@ const DefaultViewerOptions = {
 };
 type ViewerOptions = typeof DefaultViewerOptions;
 
+interface FastaSeq {
+    h: number,
+    seq: string
+}
+
 export class Viewer {
     constructor(public plugin: PluginUIContext) {
     }
@@ -239,7 +244,6 @@ export class Viewer {
         await fetch('http://localhost:3333/8dtx.pdb')
         .then(response => response.text())
         .then(pdbString => {
-          // Remove newline characters from the string
           oneLineString = pdbString;
         })
         console.log(oneLineString)
@@ -288,9 +292,10 @@ export class Viewer {
         PluginCommands.Camera.Reset(this.plugin);
     }
 
-    async clearState(){
+    async clearState(ref?: string){
         const state = this.plugin.state.data;
-        PluginCommands.State.RemoveObject(this.plugin, { state, ref: state.tree.root.ref });
+        if (!ref) ref = state.tree.root.ref;
+        PluginCommands.State.RemoveObject(this.plugin, { state, ref: ref });
     }
     
     toggleVisibility(li: number){
@@ -373,11 +378,12 @@ export class Viewer {
     }
 
     $(id: string) { return document.getElementById(id); }
-    addControl(label: string, action: any, color?: Color) {
+    addControl(label: string, action: any, color?: Color, checked: boolean = false, id?: string) {
         var labelEl = document.createElement('label');
         var inputEl = document.createElement('input');
         inputEl.type = 'checkbox';
-        inputEl.checked = true;
+        if (id) inputEl.id = id;
+        inputEl.checked = checked;
         labelEl.appendChild(inputEl);
         labelEl.appendChild(document.createTextNode(label));
         if (color) labelEl.style.backgroundColor = Color.toStyle(color);
@@ -386,10 +392,14 @@ export class Viewer {
     }
 
     async focus(sels: StructureSelection[]){
-        for (const sel of sels){
+        const addPromises = sels.map((sel) => {
             const loci = StructureSelection.toLociWithCurrentUnits(sel);
+            return new Promise<void>((resolve) => {
             this.plugin.managers.structure.focus.addFromLoci(loci);
-        }
+            resolve();
+            });
+        });
+        await Promise.all(addPromises);
     }
 
     async updateFocusRepr(epitope_id: number) {
@@ -430,7 +440,7 @@ export class Viewer {
             if (p.expandRadius == 0) p.expandRadius = 5;
             else p.expandRadius = 0;
         })
-        let sels = []
+        let sels: StructureSelection[] = []
         for (let li = 0; li < mols; li++){
             sels.push(Script.getStructureSelection(Q => Q.struct.generator.atomGroups({
                 'chain-test': Q.core.rel.eq([1, Q.ammp('id')]),
@@ -439,8 +449,8 @@ export class Viewer {
         await Promise.all(sels);
         await this.focus(sels);
         await this.updateFocusRepr(antigen);
-        this.plugin.managers.structure.focus.clear();
         this.plugin.managers.interactivity.lociSelects.deselectAll();
+        this.plugin.managers.structure.focus.clear();
     }
     
     LociDebugger(){
@@ -469,6 +479,150 @@ export class Viewer {
         });
     }
 
+    async getFasta(path: string, len: number): Promise<FastaSeq[]> {
+        let list: FastaSeq[] = [];
+        for (let i = 0; i < len; i++){
+            await fetch(path + 'pred' + i + '.fasta')
+            .then(response => response.text())
+            .then(string => {
+                const newString = string.replace(/\n/g, '');
+                const hLength = newString.indexOf(">:L") - 3
+                const hlChain = newString.replace(/>:L|>:H/g, '');
+                list.push({h: hLength, seq: hlChain});
+            })
+        }
+        return list;
+    }
+
+    mutatedPos(a: string, b: string[]): {[key: number]: number;} {
+        let pos = new Set<number>();
+        for (let i = 0; i < a.length; i++){
+            for (let j = 0; j < b.length; j++){
+                if (a[i] != b[j][i]) pos.add(i+1);
+            }
+        }
+        const sortPos = Array.from(pos).sort((a, b) => a - b);
+        const range: { [key: number]: number } = {};
+        let start = sortPos[0];
+        let end = start;
+      
+        for (let i = 1; i < sortPos.length; i++) {
+          if (sortPos[i] === end + 1) {
+            end = sortPos[i];
+          } else {
+            range[start] = end;
+            start = sortPos[i];
+            end = start;
+          }
+        }
+      
+        range[start] = end;
+        return range;
+    }
+
+    async updateRepr(seqs: FastaSeq[], structRef: Array<StateObjectSelector>, mols: string[], antigenChain: number, compo: Array<StateObjectSelector<any, any>> | undefined): Promise<Array<StateObjectSelector<any, any>> | undefined>{
+        console.log(compo)
+        if (compo) {
+            await new Promise((resolve) => {
+                const update = this.plugin.build();
+                compo.forEach((ref:any) => update.delete(ref));
+                update.commit();
+                resolve(void 0);
+            });
+        }
+        let checked = [];
+        for (let i = 0; i < mols.length; i++){ if ((this.$(mols[i]+'_visibility') as HTMLInputElement).checked){ checked.push(i); }};
+        if (checked.length === 0) return;
+        let compareSeqs = [];
+        for (let i = 1; i < checked.length; i++){
+            compareSeqs.push(seqs[checked[i]].seq);
+        }
+        const mutatedPos = this.mutatedPos(seqs[checked[0]].seq, compareSeqs);
+        let selections = [];
+        for (const start in mutatedPos) {
+            let chain:string;
+            if (parseInt(start, 10) > seqs[0].h) chain = "L";
+            else chain = "H";
+            for (let i = 0; i < checked.length; i++){
+                selections.push({id: checked[i], key: 'm'+start, chainId: chain, start: parseInt(start, 10), end: mutatedPos[start]});
+            }
+        }
+        const expressions: {[x: string]: Expression} = {};
+        for (const sel of selections){
+           expressions[sel.id +  "_" + sel.key] = this.selectSequence(sel.chainId, sel.start, sel.end);
+        }
+        const components: {[x: string]: StateObjectSelector<any, any>} = {};
+        const promises: Promise<any>[] = [];
+        for (const key in expressions) {
+          const promise = this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[parseInt(key.split('_')[0], 10)], expressions[key], key, {label: key});
+          promises.push(promise);
+          promise.then(component => {
+            if (component) components[key] = component;
+          });
+        }
+        await Promise.all(promises);
+        const builder = this.plugin.builders.structure.representation;
+        const update = this.plugin.build();
+        for (const key in components) {
+            if (key[2] == 'm') {
+                builder.buildRepresentation(update, components[key], {type: "ball-and-stick", color: "palindromic-custom", colorParams: {idx: parseInt(key.split('_')[0], 10)}});
+                // builder.buildRepresentation(update, components[key], {type: InteractionsRepresentationProvider, typeParams: { includeParent: true, parentDisplay: 'between', visuals: ["inter-unit"] }, color: InteractionTypeColorThemeProvider }); 
+            }
+            else builder.buildRepresentation(update, components[key], {type: 'cartoon',  color: 'palindromic-custom', colorParams: {idx: parseInt(key.split('_')[0], 10), epitope_id: antigenChain }})
+        }
+        await update.commit();
+        return Object.values(components);
+    }
+
+    async igfold(dir: string, loop: string, anti: string){
+        // this.LociDebugger();
+        const path = 'http://localhost:3333/' + dir + '/';
+        const antigenChain = parseInt(anti, 10);
+        let mols: string[]= [];
+        for (let i = 0; i < parseInt(loop, 10); i++){
+            mols.push("pred" + i);
+        }
+        
+        const seqs = await this.getFasta(path, mols.length);
+        this.plugin.state.updateBehavior(StructureFocusRepresentation, p => { p.expandRadius = 0;})
+
+        let structRef: Array<StateObjectSelector> = [];
+        await Promise.all(mols.map(async (mol, idx) => {
+            const struct = await this.loadStructure(path + mol + '.pdb', 'pdb');
+            structRef.push(struct);
+            const polymer = await this.plugin.builders.structure.tryCreateComponentStatic(struct, 'polymer');
+            await this.plugin.builders.structure.representation.addRepresentation(polymer!, {type: "cartoon", typeParams: {alpha: 0.3}, color: 'palindromic-custom', colorParams: { idx:idx }});
+        }));
+
+        let components: Array<StateObjectSelector<any, any>> | undefined = [];
+        this.addControl("Show Surroundings", () => {this.toggleSurr(mols.length, antigenChain);}, undefined, false);
+        for (let idx = 0; idx < mols.length; idx++) { this.addControl(mols[idx], async() => {this.toggleVisibility(idx); components = await this.updateRepr(seqs, structRef, mols, antigenChain, components);}, Color(colors[idx]), false, mols[idx]+'_visibility' ) };
+        let checkbox = this.$(mols[0]+'_visibility') as HTMLInputElement;
+        checkbox.checked = true;
+        checkbox = this.$(mols[mols.length-1]+'_visibility') as HTMLInputElement;
+        checkbox.checked = true;
+
+        let sels = []
+        for (let li = 0; li < mols.length; li++){
+            sels.push(Script.getStructureSelection(Q => Q.struct.generator.atomGroups({
+                'chain-test': Q.core.rel.eq([1, Q.ammp('id')]),
+            }), this.plugin.managers.structure.hierarchy.current.structures[li]?.cell.obj?.data as Structure))
+        }
+        await Promise.all(sels);
+        await this.superpose(sels);
+        await this.focus(sels);
+        this.plugin.managers.interactivity.lociSelects.deselectAll();
+
+        components = await this.updateRepr(seqs, structRef, mols, antigenChain, components);
+
+        for (let li = 1; li < mols.length-1; li++){
+            this.toggleVisibility(li);
+        }
+
+        await this.updateFocusRepr(antigenChain);
+        this.plugin.managers.structure.focus.clear();
+    }
+
     async superposing(){
         this.LociDebugger();
 
@@ -476,9 +630,8 @@ export class Viewer {
         const mols = ['8dtx', '8dtt', '8dtr'];
         const antigenChain = 2;
 
-
-        this.addControl("Show Surroundings", () => {this.toggleSurr(mols.length, antigenChain);})
-        for (let idx = 0; idx < mols.length; idx++) { this.addControl(mols[idx], () => {this.toggleVisibility(idx);}, Color(colors[idx]) ) }
+        this.addControl("Show Surroundings", () => {this.toggleSurr(mols.length, antigenChain);}, undefined, true);
+        for (let idx = 0; idx < mols.length; idx++) { this.addControl(mols[idx], () => {this.toggleVisibility(idx);}, Color(colors[idx]) ) };
 
         let structRef: Array<StateObjectSelector> = [];
         await Promise.all(mols.map(async (mol, idx) => {
@@ -528,7 +681,7 @@ export class Viewer {
         for (const key in components) {
             if (key[2] == 'm') {
                 builder.buildRepresentation(update, components[key], {type: "ball-and-stick", color: "palindromic-custom", colorParams: {idx: parseInt(key.split('_')[0], 10)}});
-                builder.buildRepresentation(update, components[key], {type: InteractionsRepresentationProvider, typeParams: { includeParent: true, parentDisplay: 'between', visuals: ["inter-unit"] }, color: InteractionTypeColorThemeProvider }); 
+                builder.buildRepresentation(update, components[key], {type: InteractionsRepresentationProvider, typeParams: { includeParent: true, parentDisplay: 'between' }, color: InteractionTypeColorThemeProvider }); 
             }
             else builder.buildRepresentation(update, components[key], {type: 'cartoon',  color: 'palindromic-custom', colorParams: {idx: parseInt(key.split('_')[0], 10), epitope_id: antigenChain }})
         }
@@ -628,10 +781,6 @@ export class Viewer {
         if (components.h2_8dtx) builder.addRepresentation(components.h2_8dtx!, { type: 'molecular-surface', typeParams: { alpha: 0.5 }, color: 'uniform', colorParams: {value: Color(0Xf77416)} });
         if (components.h3_8dtx) {
             builder.addRepresentation(components.h3_8dtx!, { type: 'molecular-surface', typeParams: { alpha: 0.5 }, color: "uniform", colorParams: { value: Color(0xFF0000) }});
-            // builder.buildRepresentation(update, components.h3_8dtx, { type: 'gaussian-volume', controlPoints: PD.LineGraph([
-            //     Vec2.create(0.19, 0.0), Vec2.create(0.2, 0.05), Vec2.create(0.25, 0.05), Vec2.create(0.26, 0.0),
-            //     Vec2.create(0.79, 0.0), Vec2.create(0.8, 0.05), Vec2.create(0.85, 0.05), Vec2.create(0.86, 0.0),
-            // ], { isEssential: true }), color: "uniform", colorParams: { value: Color(0xFF0000)}}, { tag: 'h3_8dtx' });
             builder.buildRepresentation(update, components.h3_8dtx, { type: 'ball-and-stick', /*color: "uniform", colorParams: {value: Color(0XFF0000)}*/ }, { tag: 'cdrh3' });
         }
         if (components.l1_8dtx) builder.addRepresentation(components.l1_8dtx!, { type: 'molecular-surface', typeParams: { alpha: 0.5 }, color: 'uniform', colorParams: {value: Color(0X5442f5)} });
@@ -643,29 +792,12 @@ export class Viewer {
         if (components.h2_8d6z) builder.addRepresentation(components.h2_8d6z!, { type: 'molecular-surface', typeParams: { alpha: 0.5 }, color: 'uniform', colorParams: {value: Color(0Xf77416)} });
         if (components.h3_8d6z) {
             builder.addRepresentation(components.h3_8d6z!, { type: 'molecular-surface', typeParams: { alpha: 0.5 }, color: "uniform", colorParams: { value: Color(0xFF0000) }});
-            // builder.buildRepresentation(update, components.h3_8d6z, { type: 'gaussian-volume', controlPoints: PD.LineGraph([
-            //     Vec2.create(0.19, 0.0), Vec2.create(0.2, 0.05), Vec2.create(0.25, 0.05), Vec2.create(0.26, 0.0),
-            //     Vec2.create(0.79, 0.0), Vec2.create(0.8, 0.05), Vec2.create(0.85, 0.05), Vec2.create(0.86, 0.0),
-            // ], { isEssential: true }), color: "uniform", colorParams: { value: Color(0xFF0000)}}, { tag: 'h3_8d6z' });
             builder.buildRepresentation(update, components.h3_8d6z, { type: 'ball-and-stick', /*color: "uniform", colorParams: {value: Color(0XFF0000)}*/ }, { tag: 'cdrh3' });
         }
         if (components.l1_8d6z) builder.addRepresentation(components.l1_8d6z!, { type: 'molecular-surface', typeParams: { alpha: 0.5 }, color: 'uniform', colorParams: {value: Color(0X5442f5)} });
         if (components.l2_8d6z) builder.addRepresentation(components.l2_8d6z!, { type: 'molecular-surface', typeParams: { alpha: 0.5 }, color: 'uniform', colorParams: {value: Color(0X5442f5)} });
         if (components.l3_8d6z) builder.addRepresentation(components.l3_8d6z!, { type: 'molecular-surface', typeParams: { alpha: 0.5 }, color: 'uniform', colorParams: {value: Color(0X5442f5)} });
-
-        // if (components.ligand) builder.buildRepresentation(update, components.ligand, { type: 'ball-and-stick' }, { tag: 'ligand' });
-        // if (components.water) builder.buildRepresentation(update, components.water, { type: 'ball-and-stick', typeParams: { alpha: 0.6 } }, { tag: 'water' });
         await update.commit();
-
-        // this.plugin.behaviors.interaction.click.subscribe((event) => {
-        //     if (StructureElement.Loci.is(event.current.loci)) {
-        
-        //         const loc = StructureElement.Location.create();
-        //         StructureElement.Loci.getFirstLocation(event.current.loci, loc);
-        
-        //         console.log(StructureProperties.residue.auth_seq_id(loc));
-        //     }
-        // });
     }
 }
 

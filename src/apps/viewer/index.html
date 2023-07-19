@@ -55,8 +55,10 @@
                     viewportShowSelectionMode: true,
                     viewportShowAnimation: false,
                 },)
-                var pdb = getParam('pdb', '[^&]+').trim();
-                viewer.superposing();
+                var dir = getParam('dir', '[^&]+').trim();
+                var loop = getParam('loop', '[^&]+').trim();
+                var antigen = getParam('antigen', '[^&]+').trim();
+                viewer.igfold(dir, loop, antigen);
             }
             render();
             
