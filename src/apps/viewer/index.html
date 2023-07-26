@@ -3,65 +3,34 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
-        <link rel="icon" href="./favicon.ico" type="image/x-icon">
-        <title>Embedded Mol* Viewer</title>
-        <style>
-            #app {
-                position: absolute;
-                left: 200px;
-                top: 20px;
-                width: 1000px;
-                height: 90%;
-            }
-
-            #controls {
-                position: absolute;
-                width: 100px;
-                height: 90%;
-                top: 20px;
-                left: 100px;
-                background-color: #000000;
-                color: #ffffff;
-            }
-
-            #controls > label {
-                display: block;
-                width: 100%;
-                text-align: left;
-            }
-        </style>
+        <link rel="icon" href="./palindromic.png" type="image/x-icon">
+        <title>Palindromic Demo</title>
         <link rel="stylesheet" type="text/css" href="molstar.css" />
+        <link rel="stylesheet" type="text/css" href="palindromic.css" />
     </head>
     <body>
-        <div id='controls'></div>
-        <div id="app"></div>
+        <div class="info-section">
+            <div class="dropdown-btn">
+                Information
+                <span class="arrow-icon up"></span>
+                <span class="arrow-icon down"></span>
+            </div>
+            <div class="info-content">
+            </div>
+        </div>
+        <div class="app-wrapper" style="height: auto; background-color: black; color: white;">
+            <div class="animation-toolbar" style="position: relative; width: 50%;"></div>
+            <div class="benchmark" style="position: relative; width: 50%;"></div>
+        </div>
+        <div class="app-wrapper">
+            <div id="app2" style="position: relative; width: 50%;"></div>
+            <div id="app3" style="position: relative; width: 50%;"></div>
+        </div>
+        <div class="app-wrapper">
+            <div id='controls'></div>
+            <div id="app"></div>
+        </div>
         <script type="text/javascript" src="./molstar.js"></script>
-        <script type="text/javascript">
-            function getParam(name, regex) {
-                var r = new RegExp(name + '=' + '(' + regex + ')[&]?', 'i');
-                return decodeURIComponent(((window.location.search || '').match(r) || [])[1] || '');
-            }
-            async function render(){
-                viewer = await molstar.Viewer.create('app', {
-                    layoutIsExpanded: false,
-                    layoutShowControls: true,
-                    layoutShowRemoteState: false,
-                    layoutShowSequence: true,
-                    layoutShowLog: true,
-                    layoutShowLeftPanel: false,
-                    collapseRightPanel: false,
-
-                    viewportShowExpand: true,
-                    viewportShowSelectionMode: true,
-                    viewportShowAnimation: false,
-                },)
-                var dir = getParam('dir', '[^&]+').trim();
-                var loop = getParam('loop', '[^&]+').trim();
-                var antigen = getParam('antigen', '[^&]+').trim();
-                viewer.igfold(dir, loop, antigen);
-            }
-            render();
-            
-        </script>
+        <script type="text/javascript" src="./palindromic.js"></script>
     </body>
 </html>

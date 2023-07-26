@@ -7,7 +7,7 @@
 
 import { G3DFormat, G3dProvider } from '../../extensions/g3d/format';
 import { VolsegVolumeServerConfig } from '../../extensions/volumes-and-segmentations';
-import { DownloadStructure, PdbDownloadProvider } from '../../mol-plugin-state/actions/structure';
+import { DownloadStructure } from '../../mol-plugin-state/actions/structure';
 import { PresetTrajectoryHierarchy } from '../../mol-plugin-state/builder/structure/hierarchy-preset';
 import { StructureRepresentationPresetProvider } from '../../mol-plugin-state/builder/structure/representation-preset';
 import { DataFormatProvider } from '../../mol-plugin-state/formats/provider';
@@ -46,11 +46,11 @@ import { StateTransforms } from '../../mol-plugin-state/transforms';
 import { SymmetryOperator } from '../../mol-math/geometry';
 import { setSubtreeVisibility } from '../../mol-plugin/behavior/static/state';
 import { colors } from './palindromic_theme';
-import { InteractionsRepresentationProvider } from '../../mol-model-props/computed/representations/interactions';
-import { InteractionTypeColorThemeProvider } from '../../mol-model-props/computed/themes/interaction-type';
 import { OrderedSet } from '../../mol-data/int/ordered-set';
 import { StructureFocusRepresentation } from '../../mol-plugin/behavior/dynamic/selection/structure-focus-representation';
 import { Expression } from '../../mol-script/language/expression';
+import { StructureComponentRef } from '../../mol-plugin-state/manager/structure/hierarchy-state';
+import { Loci } from '../../mol-model/loci';
 
 const CustomFormats = [
     ['g3d', G3dProvider] as const
@@ -239,19 +239,7 @@ export class Viewer {
         return { model, coords, preset };
     }
 
-    async loadDataFromServer(){
-        let oneLineString = "";
-        await fetch('http://localhost:3333/8dtx.pdb')
-        .then(response => response.text())
-        .then(pdbString => {
-          oneLineString = pdbString;
-        })
-        console.log(oneLineString)
-        const data = await this.plugin.builders.data.rawData({ data: oneLineString}, { state: { isGhost: true } });
-        const trajectory = await this.plugin.builders.structure.parseTrajectory(data, 'pdb');
-        await this.plugin.builders.structure.hierarchy.applyPreset(trajectory, 'default');
-    }
-
+    // return structure's state reference for data/view management (e.g. focus, selection)
     async loadStructure(file: string, format: BuiltInTrajectoryFormat, isBinary: boolean = false){
         const data = await this.plugin.builders.data.download({ url: Asset.Url(file), isBinary: isBinary }, { state: { isGhost: true } });
         const trajectory = await this.plugin.builders.structure.parseTrajectory(data, format);
@@ -303,7 +291,7 @@ export class Viewer {
         setSubtreeVisibility(this.plugin.state.data, ref, !this.plugin.state.data.cells.get(ref)!.state.isHidden)
     }
 
-    selectSequence(chain: string | number, start?: number, end?: number) {
+    selectSequenceRange(chain: string | number, start?: number, end?: number) {
         const atomGroups: any = {};
         if (typeof chain === 'string') {
             atomGroups['chain-test'] = MS.core.rel.eq([chain, MS.ammp('auth_asym_id')]);
@@ -313,6 +301,26 @@ export class Viewer {
           atomGroups['residue-test'] = MS.core.rel.inRange([MS.ammp('label_seq_id'), start, end]);
         }
         return MS.struct.generator.atomGroups(atomGroups);
+    }
+
+    selectSequenceSet(chain: string | number, set?: number[]) {
+        const atomGroups: any = {};
+        if (typeof chain === 'string') {
+            atomGroups['chain-test'] = MS.core.rel.eq([chain, MS.ammp('auth_asym_id')]);
+          } else {
+            atomGroups['chain-test'] = MS.core.rel.eq([chain, MS.ammp('id')]);}
+        if (set) {
+          atomGroups['residue-test'] = MS.core.set.has([MS.set(...set), MS.ammp('auth_seq_id')]);
+        }
+        return MS.struct.generator.atomGroups(atomGroups);
+    }
+
+    async LociFromStructureSelection(mols: number, chainId: string | number, set?: number[]): Promise<StructureElement.Loci[]>{
+        let sels = []
+        for (let li = 0; li < mols; li++){
+            sels.push(Script.getStructureSelection(this.selectSequenceSet(chainId, set), this.plugin.managers.structure.hierarchy.current.structures[li]?.cell.obj?.data as Structure))
+        }
+        return sels.map((sel) => {return StructureSelection.toLociWithSourceUnits(sel);})
     }
 
     chainEntries() {
@@ -357,9 +365,7 @@ export class Viewer {
         await this.plugin.runTask(this.plugin.state.data.updateTree(b));
     }
 
-    async superpose(sels: StructureSelection[]){
-        let locis = [];
-        for (const sel of sels){locis.push(StructureSelection.toLociWithSourceUnits(sel))};
+    async superpose(locis: StructureElement.Loci[]){
         for (const loci of locis){this.plugin.managers.interactivity.lociSelects.select({loci: loci});}
         const pivot = this.plugin.managers.structure.hierarchy.findStructure(locis[0]?.structure);
         const coordinateSystem = pivot?.transform?.cell.obj?.data.coordinateSystem;
@@ -391,9 +397,8 @@ export class Viewer {
         this.$('controls')!.appendChild(labelEl);
     }
 
-    async focus(sels: StructureSelection[]){
-        const addPromises = sels.map((sel) => {
-            const loci = StructureSelection.toLociWithCurrentUnits(sel);
+    async focus(locis: StructureElement.Loci[]){
+        const addPromises = locis.map((loci) => {
             return new Promise<void>((resolve) => {
             this.plugin.managers.structure.focus.addFromLoci(loci);
             resolve();
@@ -415,44 +420,34 @@ export class Viewer {
         build.commit();
     }
 
-    async testURI(pdb: string, options?: LoadStructureOptions){
-        const params = DownloadStructure.createDefaultParams(this.plugin.state.data.root.obj!, this.plugin);
-        const provider = this.plugin.config.get(PluginConfig.Download.DefaultPdbProvider)!;
-        return this.plugin.runTask(this.plugin.state.data.applyAction(DownloadStructure, {
-            source: {
-                name: 'pdb' as const,
-                params: {
-                    provider: {
-                        id: pdb,
-                        server: {
-                            name: provider,
-                            params: PdbDownloadProvider[provider].defaultValue as any
-                        }
-                    },
-                    options: { ...params.source.params.options, representationParams: options?.representationParams as any },
-                }
-            }
-        }));
-    }
-
     async toggleSurr(mols: number, antigen: number){
         this.plugin.state.updateBehavior(StructureFocusRepresentation, p => {
             if (p.expandRadius == 0) p.expandRadius = 5;
             else p.expandRadius = 0;
         })
-        let sels: StructureSelection[] = []
-        for (let li = 0; li < mols; li++){
-            sels.push(Script.getStructureSelection(Q => Q.struct.generator.atomGroups({
-                'chain-test': Q.core.rel.eq([1, Q.ammp('id')]),
-            }), this.plugin.managers.structure.hierarchy.current.structures[li]?.cell.obj?.data as Structure))
-        }
-        await Promise.all(sels);
-        await this.focus(sels);
+        // updateBehavior above will update all the focus representation, resetting palindromic color theme indexing
+        // need to re-update focus representations for each structure
+        // ***BUG: unexpected target focus remains after toggle, probably due to wrong async await pattern
+        let locis = await this.LociFromStructureSelection(mols, 1)
+        await this.focus(locis);
         await this.updateFocusRepr(antigen);
         this.plugin.managers.interactivity.lociSelects.deselectAll();
         this.plugin.managers.structure.focus.clear();
     }
+
+    // remove loci from display, but still appears if show surroundings when focus is set to true
+    // consider using it for animation of mutating prediction models
+    subtract(loci: Loci[]){
+        loci.forEach(l => this.plugin.managers.structure.selection.fromLoci('add', l));
+        const sel = this.plugin.managers.structure.hierarchy.getStructuresWithSelection();
+        const components: StructureComponentRef[] = [];
+        for (const s of sel) components.push(...s.components);
+        if (components.length === 0) return;
+        this.plugin.managers.structure.component.modifyByCurrentSelection(components, 'subtract');
+    }
     
+    // subscribe click behavior to viewer, when an atom/residue is clicked, console print out its sequence id and component id
+    // can change this to some other interactive features if needed in the future
     LociDebugger(){
         return this.plugin.behaviors.interaction.click.subscribe((event) => {
             const atomInfo: { id: number, labelCompId: string, authSeqId: number, authAsymId: string }[] = [];
@@ -479,6 +474,7 @@ export class Viewer {
         });
     }
 
+    // parse igfold fasta file results, h: H chain seqeunce length, for identificaition in chain selection when creating components
     async getFasta(path: string, len: number): Promise<FastaSeq[]> {
         let list: FastaSeq[] = [];
         for (let i = 0; i < len; i++){
@@ -494,6 +490,7 @@ export class Viewer {
         return list;
     }
 
+    // for superposing structures comparsions
     mutatedPos(a: string, b: string[]): {[key: number]: number;} {
         let pos = new Set<number>();
         for (let i = 0; i < a.length; i++){
@@ -505,7 +502,8 @@ export class Viewer {
         const range: { [key: number]: number } = {};
         let start = sortPos[0];
         let end = start;
-      
+        
+        //group continuous residues together as one component to prevent creating too many of them
         for (let i = 1; i < sortPos.length; i++) {
           if (sortPos[i] === end + 1) {
             end = sortPos[i];
@@ -520,9 +518,10 @@ export class Viewer {
         return range;
     }
 
+    //for superposing, whenever a structure is clicked (to hide or show), recreate components dynamcially based on difference in sequneces for the checked strutures
     async updateRepr(seqs: FastaSeq[], structRef: Array<StateObjectSelector>, mols: string[], antigenChain: number, compo: Array<StateObjectSelector<any, any>> | undefined): Promise<Array<StateObjectSelector<any, any>> | undefined>{
-        console.log(compo)
         if (compo) {
+            //clear current components
             await new Promise((resolve) => {
                 const update = this.plugin.build();
                 compo.forEach((ref:any) => update.delete(ref));
@@ -549,7 +548,7 @@ export class Viewer {
         }
         const expressions: {[x: string]: Expression} = {};
         for (const sel of selections){
-           expressions[sel.id +  "_" + sel.key] = this.selectSequence(sel.chainId, sel.start, sel.end);
+           expressions[sel.id +  "_" + sel.key] = this.selectSequenceRange(sel.chainId, sel.start, sel.end);
         }
         const components: {[x: string]: StateObjectSelector<any, any>} = {};
         const promises: Promise<any>[] = [];
@@ -574,9 +573,10 @@ export class Viewer {
         return Object.values(components);
     }
 
+    //superposition viewer for services using igfold
     async igfold(dir: string, loop: string, anti: string){
-        // this.LociDebugger();
-        const path = 'http://localhost:3333/' + dir + '/';
+        // this.LociDebugger(); //to understand what data you can get from loci, further development can be made using this function for user click behaviors (e.g. create component on selected residue)
+        const path = dir;
         const antigenChain = parseInt(anti, 10);
         let mols: string[]= [];
         for (let i = 0; i < parseInt(loop, 10); i++){
@@ -602,18 +602,15 @@ export class Viewer {
         checkbox = this.$(mols[mols.length-1]+'_visibility') as HTMLInputElement;
         checkbox.checked = true;
 
-        let sels = []
-        for (let li = 0; li < mols.length; li++){
-            sels.push(Script.getStructureSelection(Q => Q.struct.generator.atomGroups({
-                'chain-test': Q.core.rel.eq([1, Q.ammp('id')]),
-            }), this.plugin.managers.structure.hierarchy.current.structures[li]?.cell.obj?.data as Structure))
-        }
-        await Promise.all(sels);
-        await this.superpose(sels);
-        await this.focus(sels);
+        let locis = await this.LociFromStructureSelection(mols.length, 1)
+        await this.superpose(locis);
+        await this.focus(locis);
         this.plugin.managers.interactivity.lociSelects.deselectAll();
 
         components = await this.updateRepr(seqs, structRef, mols, antigenChain, components);
+
+        locis = await this.LociFromStructureSelection(mols.length, "L");
+        this.subtract(locis);
 
         for (let li = 1; li < mols.length-1; li++){
             this.toggleVisibility(li);
@@ -623,85 +620,16 @@ export class Viewer {
         this.plugin.managers.structure.focus.clear();
     }
 
-    async superposing(){
-        this.LociDebugger();
-
-        //params to be changed to json input
-        const mols = ['8dtx', '8dtt', '8dtr'];
-        const antigenChain = 2;
-
-        this.addControl("Show Surroundings", () => {this.toggleSurr(mols.length, antigenChain);}, undefined, true);
-        for (let idx = 0; idx < mols.length; idx++) { this.addControl(mols[idx], () => {this.toggleVisibility(idx);}, Color(colors[idx]) ) };
-
-        let structRef: Array<StateObjectSelector> = [];
-        await Promise.all(mols.map(async (mol, idx) => {
-            const struct = await this.loadStructure( 'http://localhost:3333/' + mol + '.pdb', 'pdb');
-            structRef.push(struct);
-            const polymer = await this.plugin.builders.structure.tryCreateComponentStatic(struct, 'polymer');
-            await this.plugin.builders.structure.representation.addRepresentation(polymer!, {type: "cartoon", typeParams: {alpha: 0.3}, color: 'palindromic-custom', colorParams: { idx:idx }});
-        }));
-
-        let sels = []
-        for (let li = 0; li < mols.length; li++){
-            sels.push(Script.getStructureSelection(Q => Q.struct.generator.atomGroups({
-                'chain-test': Q.core.rel.eq([1, Q.ammp('id')]),
-            }), this.plugin.managers.structure.hierarchy.current.structures[li]?.cell.obj?.data as Structure))
-        }
-        await Promise.all(sels);
-        await this.superpose(sels);
-        await this.focus(sels);
-        this.plugin.managers.interactivity.lociSelects.deselectAll();
-
-        const selections = [
-            {id: 0, key: "h3", chainId: 'H', start: 95, end: 102},
-            {id: 0, key: "epitope", chainId: 'I', start: -1, end: -1},
-            {id: 0, key: "m1", chainId: 'H', start: 101, end: 101},
-            {id: 1, key: "h3", chainId: 'A', start: 95, end: 102},
-            {id: 1, key: "epitope", chainId: 'G', start: -1, end: -1},
-            {id: 2, key: "h3", chainId: 'A', start: 95, end: 102},
-            {id: 2, key: "epitope", chainId: 'G', start: -1, end: -1},
-            {id: 2, key: "m1", chainId: 'A', start: 101, end: 101},
-        ]; //should be from json mutated pos and gen from cdr and hasEpitope
-        const expressions: {[x: string]: Expression} = {};
-        for (const sel of selections){
-           expressions[sel.id +  "_" + sel.key] = this.selectSequence(sel.chainId, sel.start, sel.end);
-        }
-        const components: {[x: string]: any} = {};
-        const promises: Promise<any>[] = [];
-        for (const key in expressions) {
-          const promise = this.plugin.builders.structure.tryCreateComponentFromExpression(structRef[parseInt(key.split('_')[0], 10)], expressions[key], key, {label: key});
-          promises.push(promise);
-          promise.then(component => {
-            components[key] = component;
-          });
-        }
-        await Promise.all(promises);
-        const builder = this.plugin.builders.structure.representation;
-        const update = this.plugin.build();
-        for (const key in components) {
-            if (key[2] == 'm') {
-                builder.buildRepresentation(update, components[key], {type: "ball-and-stick", color: "palindromic-custom", colorParams: {idx: parseInt(key.split('_')[0], 10)}});
-                builder.buildRepresentation(update, components[key], {type: InteractionsRepresentationProvider, typeParams: { includeParent: true, parentDisplay: 'between' }, color: InteractionTypeColorThemeProvider }); 
-            }
-            else builder.buildRepresentation(update, components[key], {type: 'cartoon',  color: 'palindromic-custom', colorParams: {idx: parseInt(key.split('_')[0], 10), epitope_id: antigenChain }})
-        }
-        await update.commit();
-        await this.updateFocusRepr(antigenChain);
-        this.plugin.managers.structure.focus.clear();
-    }
-    
-    async demo(){
+    async animation(mol: string){
+        this.plugin.clear();
+        console.log(mol);
         const time = 5;
-        const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
-        // const d = await this.plugin.builders.data.download({ url: Asset.Url('http://localhost:3333/7n1q.pdb'), isBinary: false }, { state: { isGhost: true } });
-        // const t = await this.plugin.builders.structure.parseTrajectory(d, 'pdb');
-        // const m = await this.plugin.builders.structure.createModel(t);
-        // const struct = await this.plugin.builders.structure.createStructure(m);
+        // const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
         const struct = await this.loadStructure('http://localhost:3333/7n1q.pdb', 'pdb');
         const polymer = await this.plugin.builders.structure.tryCreateComponentStatic(struct, 'polymer');
         const repr = await this.plugin.builders.structure.representation.addRepresentation(polymer!, {type: "cartoon"});       
         const traj1 = await this.loadTrajectory({
-                            model: { kind: 'model-url', url: 'http://localhost:3333/8dtx.pdb', format: 'pdb' },
+                            model: { kind: 'model-url', url: 'http://localhost:3333/8dtx_moved.pdb', format: 'pdb' },
                             coordinates: { kind: 'coordinates-url', url: 'http://localhost:3333/8dtx.dcd', format: 'dcd', isBinary: true },
                             preset: 'default'
                         });
@@ -710,35 +638,25 @@ export class Viewer {
             coordinates: { kind: 'coordinates-url', url: 'http://localhost:3333/8d6z.dcd', format: 'dcd', isBinary: true },
             preset: 'default'
         });
-
-        // const d1 = this.plugin.managers.structure.hierarchy.current.structures[1]?.cell.obj?.data as Structure;
-        // const sel = Script.getStructureSelection(Q => Q.struct.generator.atomGroups({
-        //     'chain-test': Q.core.rel.eq(['A', Q.ammp('label_asym_id')]),
-        //     'residue-test': MS.core.rel.inRange([MS.ammp('label_seq_id'), 95, 102])
-        // }), d1);
-        // const loci = StructureSelection.toLociWithSourceUnits(sel);
-        // this.plugin.managers.structure.focus.setFromLoci(loci);
         Promise.all([repr,traj1, traj2]).then(() => { this.playAnimation(time);});
-        // this.toggleRock();
-        // await this.plugin.managers.animation.stop();
-        await sleep((time +2)*1000);
-        // this.toggleRock();
-        await this.clearState();
-        // const data = await this.plugin.builders.data.download({ url: Asset.Url('http://localhost:3333/7n1q.pdb'), isBinary: false }, { state: { isGhost: true } });
-        // const trajectory = await this.plugin.builders.structure.parseTrajectory(data, 'pdb');
-        // const model = await this.plugin.builders.structure.createModel(trajectory);
-        // const structure = await this.plugin.builders.structure.createStructure(model);
+    //     await sleep((time +2)*1000);
+    //     await this.clearState();
+    }
+
+    // a hardcoded demo for highlighting cdr regions and epitope of antigen
+    // need refactor when the json input from repdiction model is finalised
+    // note that unique key is needed for creating each component
+    async demo(){
         const structure = await this.loadStructure('http://localhost:3333/7n1q.pdb', 'pdb');
-        const structure2 = await this.loadStructure('http://localhost:3333/8dtx.pdb', 'pdb');
+        const structure2 = await this.loadStructure('http://localhost:3333/8dtx_moved.pdb', 'pdb');
         const structure3 = await this.loadStructure('http://localhost:3333/8d6z.pdb', 'pdb');
         
-        // let s1 = this.plugin.managers.structure.hierarchy.current.structures[0]?.cell.obj?.data as Structure;
-        let h1_8dtx = this.selectSequence('A', 26, 32);
-        let h2_8dtx = this.selectSequence('A', 52, 56);
-        let h3_8dtx = this.selectSequence('A', 95, 102);
-        let l1_8dtx = this.selectSequence('B', 24, 34);
-        let l2_8dtx = this.selectSequence('B', 50, 56);
-        let l3_8dtx = this.selectSequence('B', 89 ,97);
+        let h1_8dtx = this.selectSequenceRange('A', 26, 32);
+        let h2_8dtx = this.selectSequenceRange('A', 52, 56);
+        let h3_8dtx = this.selectSequenceRange('A', 95, 102);
+        let l1_8dtx = this.selectSequenceRange('B', 24, 34);
+        let l2_8dtx = this.selectSequenceRange('B', 50, 56);
+        let l3_8dtx = this.selectSequenceRange('B', 89 ,97);
         let peptide = MS.struct.generator.atomGroups({
             'chain-test': MS.core.rel.eq(['C', MS.ammp('auth_asym_id')]),
         });
@@ -766,9 +684,6 @@ export class Viewer {
             l2_8d6z: await this.plugin.builders.structure.tryCreateComponentFromExpression(structure3, l2_8dtx, 'l2_8d6z', {label: 'l2_8d6z'}),
             l3_8d6z: await this.plugin.builders.structure.tryCreateComponentFromExpression(structure3, l3_8dtx, 'l3_8d6z', {label: 'l3_8d6z'}),
             peptide_8d6z: await this.plugin.builders.structure.tryCreateComponentFromExpression(structure3, peptide_8d6z, 'peptide_8d6z', {label: 'peptide_8d6z'}),
-
-            // ligand: await this.plugin.builders.structure.tryCreateComponentStatic(structure, 'ligand'),
-            // water: await this.plugin.builders.structure.tryCreateComponentStatic(structure, 'water'),
         };
 
         const builder = this.plugin.builders.structure.representation;

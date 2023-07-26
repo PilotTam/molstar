@@ -1,0 +1,14 @@
+{
+    "info": [
+      {"antibody": "ABCD"},
+      {"antigen": "none"}
+    ],
+    "molstar": {
+        "dir": "http://localhost:3333/h3_only/",
+        "loops": 5,
+        "antigen": -1,
+        "mols": ["pred0", "pred1", "pred2", "pred3", "pred4"],
+        "benchmark": "pred4",
+        "animation": true
+    }
+}

@@ -22,7 +22,7 @@ const PalindromicCustomColorThemeParams = {
         { defaultValue: colors.map(c => ({ color: Color(c) })) }),
     idx: PD.Numeric(0, {min: 0, max: 3}),
     isEpitope: PD.Boolean(false),
-    epitope_id: PD.Numeric(-1)
+    epitope_id: PD.Numeric(-1) //-1 when no antigen chain in strucuture
 };
 type PalindromicCustomColorThemeParams = typeof PalindromicCustomColorThemeParams
 function getChainIdColorThemeParams(ctx: ThemeDataContext) {
