@@ -256,6 +256,7 @@ export class Viewer {
         this.plugin.managers.animation.play(AnimateModelIndex, { duration: { name: 'fixed', params: { durationInS: time }}, mode: { name: 'once', params: { direction: 'forward' } } });
     }
 
+    // spin is similar, change 'rock' to 'spin' and params only has :speed
     toggleRock() {
         if (!this.plugin.canvas3d) return;
 
@@ -286,6 +287,7 @@ export class Viewer {
         PluginCommands.State.RemoveObject(this.plugin, { state, ref: ref });
     }
     
+    // hide/show the whole structure
     toggleVisibility(li: number){
         const ref = this.plugin.managers.structure.hierarchy.current.structures[li]?.cell.sourceRef as string;
         setSubtreeVisibility(this.plugin.state.data, ref, !this.plugin.state.data.cells.get(ref)!.state.isHidden)
@@ -595,6 +597,8 @@ export class Viewer {
         }));
 
         let components: Array<StateObjectSelector<any, any>> | undefined = [];
+
+        // may consider change the molstar control panel which use React framework in the future
         this.addControl("Show Surroundings", () => {this.toggleSurr(mols.length, antigenChain);}, undefined, false);
         for (let idx = 0; idx < mols.length; idx++) { this.addControl(mols[idx], async() => {this.toggleVisibility(idx); components = await this.updateRepr(seqs, structRef, mols, antigenChain, components);}, Color(colors[idx]), false, mols[idx]+'_visibility' ) };
         let checkbox = this.$(mols[0]+'_visibility') as HTMLInputElement;
@@ -620,11 +624,12 @@ export class Viewer {
         this.plugin.managers.structure.focus.clear();
     }
 
+    //function arguments may need to changed into array of filename? or some hashmap that tells have dcd files or not
     async animation(mol: string){
         this.plugin.clear();
-        console.log(mol);
         const time = 5;
         // const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+        //     await sleep((time +2)*1000);
         const struct = await this.loadStructure('http://localhost:3333/7n1q.pdb', 'pdb');
         const polymer = await this.plugin.builders.structure.tryCreateComponentStatic(struct, 'polymer');
         const repr = await this.plugin.builders.structure.representation.addRepresentation(polymer!, {type: "cartoon"});       
@@ -639,8 +644,6 @@ export class Viewer {
             preset: 'default'
         });
         Promise.all([repr,traj1, traj2]).then(() => { this.playAnimation(time);});
-    //     await sleep((time +2)*1000);
-    //     await this.clearState();
     }
 
     // a hardcoded demo for highlighting cdr regions and epitope of antigen

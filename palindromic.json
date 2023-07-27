@@ -8,6 +8,7 @@
         "loops": 5,
         "antigen": -1,
         "mols": ["pred0", "pred1", "pred2", "pred3", "pred4"],
+        "chains": ["H", "L", "I", "G"],
         "benchmark": "pred4",
         "animation": true
     }
